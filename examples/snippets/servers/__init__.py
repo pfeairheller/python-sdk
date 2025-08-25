@@ -31,7 +31,7 @@ def run_server():
 
     try:
         module = importlib.import_module(f".{server_name}", package=__name__)
-        module.mcp.run(cast(Literal["stdio", "sse", "streamable-http"], transport))
+        module.mcp.run(cast(Literal["stdio", "sse", "streamable-http", "essr"], transport))
     except ImportError:
         print(f"Error: Server '{server_name}' not found")
         sys.exit(1)

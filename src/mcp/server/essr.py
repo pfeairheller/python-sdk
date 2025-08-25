@@ -137,8 +137,7 @@ class EssrServerTransport:
     def __init__(
         self,
         mcp_session_id: str | None,
-        event_store: EventStore | None = None,
-        security_settings: TransportSecuritySettings | None = None,
+        event_store: EventStore | None = None
     ) -> None:
         """
         Initialize a new StreamableHTTP server transport.
@@ -149,7 +148,6 @@ class EssrServerTransport:
             event_store: Event store for resumability support. If provided,
                         resumability will be enabled, allowing clients to
                         reconnect and resume messages.
-            security_settings: Optional security settings for DNS rebinding protection.
 
         Raises:
             ValueError: If the session ID contains invalid characters.
@@ -159,7 +157,6 @@ class EssrServerTransport:
 
         self.mcp_session_id = mcp_session_id
         self._event_store = event_store
-        self._security = TransportSecurityMiddleware(security_settings)
         self._request_streams: dict[
             RequestId,
             tuple[
@@ -259,12 +256,6 @@ class EssrServerTransport:
     async def handle_request(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Application entry point that handles all HTTP requests"""
         request = Request(scope, receive)
-
-        # Validate request headers for DNS rebinding protection
-        error_response = await self._security.validate_request(request, is_post=False)
-        if error_response:
-            await error_response(scope, receive, send)
-            return
 
         if self._terminated:
             # If the session has been terminated, return 404 Not Found
@@ -809,6 +800,10 @@ class EssrServerTransport:
                                 for message. Still processing message as the client
                                 might reconnect and replay."""
                             )
+
+                except anyio.ClosedResourceError:
+                    logger.debug("Read stream closed, stopping message router")
+
                 except Exception:
                     logger.exception("Error in message router")
 

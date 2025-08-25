@@ -21,7 +21,7 @@ from mcp.server.essr import (
     EventStore,
     EssrServerTransport,
 )
-from mcp.server.transport_security import TransportSecuritySettings
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,11 @@ class ESSRSessionManager:
         self,
         app: MCPServer[Any, Any],
         event_store: EventStore | None = None,
-        stateless: bool = False,
-        security_settings: TransportSecuritySettings | None = None,
+        stateless: bool = False
     ):
         self.app = app
         self.event_store = event_store
         self.stateless = stateless
-        self.security_settings = security_settings
 
         # Session tracking (only used if not stateless)
         self._session_creation_lock = anyio.Lock()
@@ -156,15 +154,14 @@ class ESSRSessionManager:
         """
         logger.debug("Stateless mode: Creating new transport for this request")
         # No session ID needed in stateless mode
-        http_transport = EssrServerTransport(
+        essr_transport = EssrServerTransport(
             mcp_session_id=None,  # No session tracking in stateless mode
-            event_store=None,  # No event store in stateless mode
-            security_settings=self.security_settings,
+            event_store=None  # No event store in stateless mode
         )
 
         # Start server in a new task
         async def run_stateless_server(*, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED):
-            async with http_transport.connect() as streams:
+            async with essr_transport.connect() as streams:
                 read_stream, write_stream = streams
                 task_status.started()
                 try:
@@ -183,10 +180,10 @@ class ESSRSessionManager:
         await self._task_group.start(run_stateless_server)
 
         # Handle the HTTP request and return the response
-        await http_transport.handle_request(scope, receive, send)
+        await essr_transport.handle_request(scope, receive, send)
 
         # Terminate the transport after the request is handled
-        await http_transport.terminate()
+        await essr_transport.terminate()
 
     async def _handle_stateful_request(
         self,
@@ -217,19 +214,18 @@ class ESSRSessionManager:
             logger.debug("Creating new transport")
             async with self._session_creation_lock:
                 new_session_id = uuid4().hex
-                http_transport = EssrServerTransport(
+                essr_transport = EssrServerTransport(
                     mcp_session_id=new_session_id,
-                    event_store=self.event_store,  # May be None (no resumability)
-                    security_settings=self.security_settings,
+                    event_store=self.event_store  # May be None (no resumability)
                 )
 
-                assert http_transport.mcp_session_id is not None
-                self._server_instances[http_transport.mcp_session_id] = http_transport
+                assert essr_transport.mcp_session_id is not None
+                self._server_instances[essr_transport.mcp_session_id] = essr_transport
                 logger.info(f"Created new transport with session ID: {new_session_id}")
 
                 # Define the server runner
                 async def run_server(*, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED) -> None:
-                    async with http_transport.connect() as streams:
+                    async with essr_transport.connect() as streams:
                         read_stream, write_stream = streams
                         task_status.started()
                         try:
@@ -241,22 +237,22 @@ class ESSRSessionManager:
                             )
                         except Exception as e:
                             logger.error(
-                                f"Session {http_transport.mcp_session_id} crashed: {e}",
+                                f"Session {essr_transport.mcp_session_id} crashed: {e}",
                                 exc_info=True,
                             )
                         finally:
                             # Only remove from instances if not terminated
                             if (
-                                http_transport.mcp_session_id
-                                and http_transport.mcp_session_id in self._server_instances
-                                and not http_transport.is_terminated
+                                essr_transport.mcp_session_id
+                                and essr_transport.mcp_session_id in self._server_instances
+                                and not essr_transport.is_terminated
                             ):
                                 logger.info(
                                     "Cleaning up crashed session "
-                                    f"{http_transport.mcp_session_id} from "
+                                    f"{essr_transport.mcp_session_id} from "
                                     "active instances."
                                 )
-                                del self._server_instances[http_transport.mcp_session_id]
+                                del self._server_instances[essr_transport.mcp_session_id]
 
                 # Assert task group is not None for type checking
                 assert self._task_group is not None
@@ -264,7 +260,7 @@ class ESSRSessionManager:
                 await self._task_group.start(run_server)
 
                 # Handle the HTTP request and return the response
-                await http_transport.handle_request(scope, receive, send)
+                await essr_transport.handle_request(scope, receive, send)
         else:
             # Invalid session ID
             response = Response(

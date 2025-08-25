@@ -104,7 +104,7 @@ def main(
     session_manager = ESSRSessionManager(
         app=app,
         event_store=None,
-        stateless=True,
+        stateless=False,
     )
 
     async def handle_streamable_http(

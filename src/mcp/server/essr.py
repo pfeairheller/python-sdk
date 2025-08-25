@@ -25,8 +25,7 @@ from kep.essr.server import Response
 from kep.essr.server.types import Receive, Scope, Send
 
 from mcp.server.transport_security import (
-    TransportSecurityMiddleware,
-    TransportSecuritySettings,
+    TransportSecurityMiddleware
 )
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
@@ -55,9 +54,6 @@ LAST_EVENT_ID_HEADER = "last-event-id"
 # Content types
 CONTENT_TYPE_JSON = "application/json"
 CONTENT_TYPE_SSE = "text/event-stream"
-
-# Special key for the standalone GET stream
-GET_STREAM_KEY = "_GET_stream"
 
 # Session ID validation pattern (visible ASCII characters ranging from 0x21 to 0x7E)
 # Pattern ensures entire string contains only valid characters by using ^ and $ anchors
@@ -287,7 +283,7 @@ class EssrServerTransport:
         return any(part == CONTENT_TYPE_JSON for part in content_type_parts)
 
     async def _handle_post_request(self, scope: Scope, request: Request, receive: Receive, send: Send) -> None:
-        """Handle POST requests containing JSON-RPC messages."""
+        """ Handle POST requests containing JSON-RPC messages. """
         writer = self._read_stream_writer
         if writer is None:
             raise ValueError("No read stream writer available. Ensure connect() is called first.")
@@ -428,98 +424,6 @@ class EssrServerTransport:
             if writer:
                 await writer.send(Exception(err))
             return
-
-    async def _handle_get_request(self, request: Request, send: Send) -> None:
-        """
-        Handle GET request to establish SSE.
-
-        This allows the server to communicate to the client without the client
-        first sending data via HTTP POST. The server can send JSON-RPC requests
-        and notifications on this stream.
-        """
-        writer = self._read_stream_writer
-        if writer is None:
-            raise ValueError("No read stream writer available. Ensure connect() is called first.")
-
-        # Validate Accept header - must include text/event-stream
-        _, has_sse = self._check_accept_headers(request)
-
-        if not has_sse:
-            response = self._create_error_response(
-                "Not Acceptable: Client must accept text/event-stream",
-                HTTPStatus.NOT_ACCEPTABLE,
-            )
-            await response(request.scope, request.receive, send)
-            return
-
-        if not await self._validate_request_headers(request, send):
-            return
-
-        # Handle resumability: check for Last-Event-ID header
-        if last_event_id := request.headers.get(LAST_EVENT_ID_HEADER):
-            await self._replay_events(last_event_id, request, send)
-            return
-
-        headers = {
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "Content-Type": CONTENT_TYPE_SSE,
-        }
-
-        if self.mcp_session_id:
-            headers[MCP_SESSION_ID_HEADER] = self.mcp_session_id
-
-        # Check if we already have an active GET stream
-        if GET_STREAM_KEY in self._request_streams:
-            response = self._create_error_response(
-                "Conflict: Only one SSE stream is allowed per session",
-                HTTPStatus.CONFLICT,
-            )
-            await response(request.scope, request.receive, send)
-            return
-
-        # Create SSE stream
-        sse_stream_writer, sse_stream_reader = anyio.create_memory_object_stream[dict[str, str]](0)
-
-        async def standalone_sse_writer():
-            try:
-                # Create a standalone message stream for server-initiated messages
-
-                self._request_streams[GET_STREAM_KEY] = anyio.create_memory_object_stream[EventMessage](0)
-                standalone_stream_reader = self._request_streams[GET_STREAM_KEY][1]
-
-                async with sse_stream_writer, standalone_stream_reader:
-                    # Process messages from the standalone stream
-                    async for event_message in standalone_stream_reader:
-                        # For the standalone stream, we handle:
-                        # - JSONRPCNotification (server sends notifications to client)
-                        # - JSONRPCRequest (server sends requests to client)
-                        # We should NOT receive JSONRPCResponse
-
-                        # Send the message via SSE
-                        event_data = self._create_event_data(event_message)
-                        await sse_stream_writer.send(event_data)
-            except Exception:
-                logger.exception("Error in standalone SSE writer")
-            finally:
-                logger.debug("Closing standalone SSE writer")
-                await self._clean_up_memory_streams(GET_STREAM_KEY)
-
-        # Create and start EventSourceResponse
-        response = EventSourceResponse(
-            content=sse_stream_reader,
-            data_sender_callable=standalone_sse_writer,
-            headers=headers,
-        )
-
-        try:
-            # This will send headers immediately and establish the SSE connection
-            await response(request.scope, request.receive, send)
-        except Exception:
-            logger.exception("Error in standalone SSE response")
-            await sse_stream_writer.aclose()
-            await sse_stream_reader.aclose()
-            await self._clean_up_memory_streams(GET_STREAM_KEY)
 
     async def _handle_delete_request(self, request: Request, send: Send) -> None:
         """Handle DELETE requests for explicit session termination."""
@@ -774,7 +678,7 @@ class EssrServerTransport:
                             ):
                                 target_request_id = str(session_message.metadata.related_request_id)
 
-                        request_stream_id = target_request_id if target_request_id is not None else GET_STREAM_KEY
+                        request_stream_id = target_request_id
 
                         # Store the event if we have an event store,
                         # regardless of whether a client is connected

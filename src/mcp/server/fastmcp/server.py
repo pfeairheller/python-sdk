@@ -2,6 +2,7 @@
 
 from __future__ import annotations as _annotations
 
+import asyncio
 import inspect
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable, Sequence
@@ -14,7 +15,6 @@ from pydantic import BaseModel
 from pydantic.networks import AnyUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.applications import Starlette
-from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -232,7 +232,7 @@ class FastMCP(Generic[LifespanResultT]):
 
     def run(
         self,
-        transport: Literal["stdio", "sse", "streamable-http"] = "stdio",
+        transport: Literal["stdio", "sse", "streamable-http", "essr"] = "stdio",
         mount_path: str | None = None,
     ) -> None:
         """Run the FastMCP server. Note this is a synchronous function.
@@ -241,7 +241,7 @@ class FastMCP(Generic[LifespanResultT]):
             transport: Transport protocol to use ("stdio", "sse", or "streamable-http")
             mount_path: Optional mount path for SSE transport
         """
-        TRANSPORTS = Literal["stdio", "sse", "streamable-http"]
+        TRANSPORTS = Literal["stdio", "sse", "streamable-http", "essr"]
         if transport not in TRANSPORTS.__args__:  # type: ignore
             raise ValueError(f"Unknown transport: {transport}")
 
@@ -252,6 +252,8 @@ class FastMCP(Generic[LifespanResultT]):
                 anyio.run(lambda: self.run_sse_async(mount_path))
             case "streamable-http":
                 anyio.run(self.run_streamable_http_async)
+            case "essr":
+                anyio.run(self.run_essr_async)
 
     def _setup_handlers(self) -> None:
         """Set up core MCP protocol handlers."""
@@ -689,6 +691,10 @@ class FastMCP(Generic[LifespanResultT]):
         )
         server = uvicorn.Server(config)
         await server.serve()
+
+    async def run_essr_async(self) -> None:
+        """Run the server using ESSR transport."""
+        event = asyncio.Event()
 
     def _normalize_path(self, mount_path: str, endpoint: str) -> str:
         """
@@ -1146,7 +1152,6 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT, RequestT]):
             level: Log level (debug, info, warning, error)
             message: Log message
             logger_name: Optional logger name
-            **extra: Additional structured data to include
         """
         await self.request_context.session.send_log_message(
             level=level,

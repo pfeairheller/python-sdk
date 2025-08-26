@@ -16,7 +16,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import click
+from keri.app.cli.common import existing
+
 from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.essr import essr_client
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -150,27 +154,31 @@ class CallbackServer:
 class SimpleAuthClient:
     """Simple MCP client with auth support."""
 
-    def __init__(self, server_url: str, transport_type: str = "streamable_http"):
+    def __init__(self, server_url: str, transport_type: str = "streamable_http", name=None, alias=None, target=None):
         self.server_url = server_url
         self.transport_type = transport_type
         self.session: ClientSession | None = None
+        self.name = name
+        self.alias = alias
+        self.target = target
 
     async def connect(self):
         """Connect to the MCP server."""
         print(f"🔗 Attempting to connect to {self.server_url}...")
 
         try:
-            callback_server = CallbackServer(port=3030)
-            callback_server.start()
+            # callback_server = CallbackServer(port=3030)
+            # callback_server.start()
 
             async def callback_handler() -> tuple[str, str | None]:
                 """Wait for OAuth callback and return auth code and state."""
                 print("⏳ Waiting for authorization callback...")
-                try:
-                    auth_code = callback_server.wait_for_callback(timeout=300)
-                    return auth_code, callback_server.get_state()
-                finally:
-                    callback_server.stop()
+                # try:
+                #     auth_code = callback_server.wait_for_callback(timeout=300)
+                #     return auth_code, callback_server.get_state()
+                # finally:
+                #     callback_server.stop()
+                return "", None
 
             client_metadata_dict = {
                 "client_name": "Simple Auth Client",
@@ -200,17 +208,28 @@ class SimpleAuthClient:
             if self.transport_type == "sse":
                 print("📡 Opening SSE transport connection with auth...")
                 async with sse_client(
-                    url=self.server_url,
-                    auth=oauth_auth,
-                    timeout=60,
+                        url=self.server_url,
+                        auth=oauth_auth,
+                        timeout=60,
                 ) as (read_stream, write_stream):
                     await self._run_session(read_stream, write_stream, None)
+            elif self.transport_type == "essr":
+                print("📡 Opening ESSR transport connection with auth...")
+                with existing.existingHab(name=self.name, alias=self.alias) as (hby, hab):
+                    async with essr_client(
+                            hby=hby,
+                            hab=hab,
+                            url=self.server_url,
+                            target=self.target,
+                            timeout=timedelta(seconds=60),
+                    ) as (read_stream, write_stream, get_session_id):
+                        await self._run_session(read_stream, write_stream, get_session_id)
             else:
                 print("📡 Opening StreamableHTTP transport connection with auth...")
                 async with streamablehttp_client(
-                    url=self.server_url,
-                    auth=oauth_auth,
-                    timeout=timedelta(seconds=60),
+                        url=self.server_url,
+                        auth=oauth_auth,
+                        timeout=timedelta(seconds=60),
                 ) as (read_stream, write_stream, get_session_id):
                     await self._run_session(read_stream, write_stream, get_session_id)
 
@@ -333,30 +352,40 @@ class SimpleAuthClient:
                 break
 
 
-async def main():
+async def main(name, alias, target):
     """Main entry point."""
     # Default server URL - can be overridden with environment variable
     # Most MCP streamable HTTP servers use /mcp as the endpoint
-    server_url = os.getenv("MCP_SERVER_PORT", 8000)
+    server_port = os.getenv("MCP_SERVER_PORT", 8000)
     transport_type = os.getenv("MCP_TRANSPORT_TYPE", "streamable_http")
-    server_url = (
-        f"http://localhost:{server_url}/mcp"
-        if transport_type == "streamable_http"
-        else f"http://localhost:{server_url}/sse"
-    )
+    server_url = None
+    match transport_type:
+        case "sse":
+            server_url = f"http://localhost:{server_port}/sse"
+        case "essr" | "streamable_http" | _:
+            server_url = f"http://localhost:{server_port}/mcp"
+
 
     print("🚀 Simple MCP Auth Client")
     print(f"Connecting to: {server_url}")
     print(f"Transport type: {transport_type}")
 
     # Start connection flow - OAuth will be handled automatically
-    client = SimpleAuthClient(server_url, transport_type)
+    client = SimpleAuthClient(server_url, transport_type, name=name, alias=alias, target=target)
     await client.connect()
 
 
-def cli():
+@click.command()
+@click.option("--name", default=None, help="Database environment name")
+@click.option("--alias", default=None, help="Identifier alias or AID to use to decrypt messages and sign responses")
+@click.option("--target", default=None, help="Identifier alias or AID of the server")
+def cli(
+        name: str,
+        alias: str,
+        target: str,
+):
     """CLI entry point for uv script."""
-    asyncio.run(main())
+    asyncio.run(main(name, alias, target))
 
 
 if __name__ == "__main__":
